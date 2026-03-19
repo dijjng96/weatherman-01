@@ -313,51 +313,25 @@ function fmt(n) {
   if (n >= 0.01)  return n.toLocaleString('ko-KR',{minimumFractionDigits:4,maximumFractionDigits:4});
   return n.toFixed(6);
 }
+/* 외화 입력칸 표시 — 항상 소수점 2자리 */
+function fmtForeign(n) {
+  if (n >= 1) return n.toLocaleString('ko-KR',{minimumFractionDigits:2,maximumFractionDigits:2});
+  if (n >= 0.01) return n.toFixed(4);
+  return n.toFixed(6);
+}
 function fmtKrw(n)  { return '₩ ' + Math.round(n).toLocaleString('ko-KR'); }
 function flagUrl(c) { return `https://flagcdn.com/w80/${c}.png`; }
 
-/* ── FETCH (네이버 환율 기준, 실패 시 open.er-api 폴백) ── */
-// 네이버는 일부 통화를 100단위로 표시 (JPY, IDR 등)
-const NAVER_UNITS = { JPY:100, IDR:100 };
-
-async function fetchNaverRates() {
-  const proxy = 'https://corsproxy.io/?';
-  const target = 'https://finance.naver.com/marketindex/exchangeList.nhn';
-  const res  = await fetch(proxy + encodeURIComponent(target));
-  const data = await res.json();
-  const result = {};
-  data.forEach(item => {
-    const code  = item.currencyCode;
-    const price = parseFloat((item.basePrice||'').replace(/,/g,''));
-    if (!code || !price) return;
-    const unit  = NAVER_UNITS[code] || 1;
-    result[code] = unit / price; // foreign per 1 KRW
-  });
-  return result;
-}
-
+/* ── FETCH (exchangerate-api.com · 10분 갱신) ── */
 async function fetchRates() {
   try {
-    let naverOk = false;
-    try {
-      const naverRates = await fetchNaverRates();
-      if (Object.keys(naverRates).length > 5) {
-        rates = naverRates;
-        naverOk = true;
-        document.getElementById('updateTime').textContent =
-          '네이버 환율 기준 · ' + new Date().toLocaleString('ko-KR',{timeZone:'Asia/Seoul',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
-      }
-    } catch(e) {}
-
-    if (!naverOk) {
-      const res  = await fetch('https://open.er-api.com/v6/latest/KRW');
-      const data = await res.json();
-      if (data.result !== 'success') throw new Error();
-      rates = data.rates;
-      const dt = new Date(data.time_last_update_utc);
-      document.getElementById('updateTime').textContent =
-        '기준 ' + dt.toLocaleString('ko-KR',{timeZone:'Asia/Seoul',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
-    }
+    const res  = await fetch('https://api.exchangerate-api.com/v4/latest/KRW');
+    const data = await res.json();
+    if (!data.rates) throw new Error();
+    rates = data.rates;
+    const dt = new Date(data.time_last_updated * 1000);
+    document.getElementById('updateTime').textContent =
+      '기준 ' + dt.toLocaleString('ko-KR',{timeZone:'Asia/Seoul',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
 
     document.getElementById('liveBadge').style.display = 'flex';
     renderCards();
@@ -365,8 +339,23 @@ async function fetchRates() {
     if (kv > 0) propagateKrw(kv);
     fetchPrevRates(new Date());
   } catch(e) {
-    document.getElementById('currencyGrid').innerHTML =
-      '<div class="error-msg">환율 데이터를 불러올 수 없습니다.<br>인터넷 연결 확인 후 새로고침 해주세요.</div>';
+    try {
+      const res2 = await fetch('https://open.er-api.com/v6/latest/KRW');
+      const data2 = await res2.json();
+      if (!data2.rates) throw new Error();
+      rates = data2.rates;
+      const dt2 = new Date(data2.time_last_update_utc);
+      document.getElementById('updateTime').textContent =
+        '기준 ' + dt2.toLocaleString('ko-KR',{timeZone:'Asia/Seoul',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+      document.getElementById('liveBadge').style.display = 'flex';
+      renderCards();
+      const kv = getRawKrw();
+      if (kv > 0) propagateKrw(kv);
+      fetchPrevRates(new Date());
+    } catch(e2) {
+      document.getElementById('currencyGrid').innerHTML =
+        '<div class="error-msg">환율 데이터를 불러올 수 없습니다.<br>인터넷 연결 확인 후 새로고침 해주세요.</div>';
+    }
   }
 }
 
@@ -517,7 +506,7 @@ function onKrwCardInput(code, val) {
   const fi = document.getElementById('fi_' + code);
   if (!r || !num || num <= 0) { if(fi) fi.value = ''; return; }
   const foreign = num * r;
-  if (fi) fi.value = foreign < 1 ? foreign.toFixed(4) : fmt(foreign).replace(/,/g,'');
+  if (fi) fi.value = fmtForeign(foreign);
 }
 
 function resetCard(code, side) {
@@ -550,7 +539,7 @@ function propagateKrw(krwVal) {
     const fi = document.getElementById('fi_' + c.code);
     const ki = document.getElementById('ki_' + c.code);
     const foreign = krwVal * r;
-    if (fi) fi.value = foreign < 1 ? foreign.toFixed(4) : fmt(foreign).replace(/,/g,'');
+    if (fi) fi.value = fmtForeign(foreign);
     if (ki) ki.value = '';
   });
 }
