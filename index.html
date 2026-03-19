@@ -233,7 +233,7 @@ header {
       </div>
       <div class="krw-input-row">
         <span class="krw-sym">₩</span>
-        <input class="krw-input" id="krwInput" type="number" placeholder="0" inputmode="decimal" autocomplete="off">
+        <input class="krw-input" id="krwInput" type="text" placeholder="0" inputmode="numeric" autocomplete="off">
       </div>
       <div class="krw-output-row" id="krwOutputRow"></div>
     </div>
@@ -316,24 +316,54 @@ function fmt(n) {
 function fmtKrw(n)  { return '₩ ' + Math.round(n).toLocaleString('ko-KR'); }
 function flagUrl(c) { return `https://flagcdn.com/w80/${c}.png`; }
 
-/* ── FETCH ── */
+/* ── FETCH (네이버 환율 기준, 실패 시 open.er-api 폴백) ── */
+// 네이버는 일부 통화를 100단위로 표시 (JPY, IDR 등)
+const NAVER_UNITS = { JPY:100, IDR:100 };
+
+async function fetchNaverRates() {
+  const proxy = 'https://corsproxy.io/?';
+  const target = 'https://finance.naver.com/marketindex/exchangeList.nhn';
+  const res  = await fetch(proxy + encodeURIComponent(target));
+  const data = await res.json();
+  const result = {};
+  data.forEach(item => {
+    const code  = item.currencyCode;
+    const price = parseFloat((item.basePrice||'').replace(/,/g,''));
+    if (!code || !price) return;
+    const unit  = NAVER_UNITS[code] || 1;
+    result[code] = unit / price; // foreign per 1 KRW
+  });
+  return result;
+}
+
 async function fetchRates() {
   try {
-    const res  = await fetch('https://open.er-api.com/v6/latest/KRW');
-    const data = await res.json();
-    if (data.result !== 'success') throw new Error();
-    rates = data.rates;
+    let naverOk = false;
+    try {
+      const naverRates = await fetchNaverRates();
+      if (Object.keys(naverRates).length > 5) {
+        rates = naverRates;
+        naverOk = true;
+        document.getElementById('updateTime').textContent =
+          '네이버 환율 기준 · ' + new Date().toLocaleString('ko-KR',{timeZone:'Asia/Seoul',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+      }
+    } catch(e) {}
 
-    const dt = new Date(data.time_last_update_utc);
-    document.getElementById('updateTime').textContent =
-      '기준 ' + dt.toLocaleString('ko-KR',{timeZone:'Asia/Seoul',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+    if (!naverOk) {
+      const res  = await fetch('https://open.er-api.com/v6/latest/KRW');
+      const data = await res.json();
+      if (data.result !== 'success') throw new Error();
+      rates = data.rates;
+      const dt = new Date(data.time_last_update_utc);
+      document.getElementById('updateTime').textContent =
+        '기준 ' + dt.toLocaleString('ko-KR',{timeZone:'Asia/Seoul',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+    }
+
     document.getElementById('liveBadge').style.display = 'flex';
-
     renderCards();
-    const kv = parseFloat(document.getElementById('krwInput').value);
+    const kv = getRawKrw();
     if (kv > 0) propagateKrw(kv);
-
-    fetchPrevRates(dt);
+    fetchPrevRates(new Date());
   } catch(e) {
     document.getElementById('currencyGrid').innerHTML =
       '<div class="error-msg">환율 데이터를 불러올 수 없습니다.<br>인터넷 연결 확인 후 새로고침 해주세요.</div>';
@@ -455,7 +485,7 @@ function renderCards() {
             <span class="row-code">KRW</span>
           </div>
           <input class="calc-input" id="ki_${c.code}"
-            type="number" placeholder="원화 입력" inputmode="decimal" autocomplete="off"
+            type="text" placeholder="원화 입력" inputmode="numeric" autocomplete="off"
             oninput="onKrwCardInput('${c.code}', this.value)"
             onfocus="resetCard('${c.code}','krw')">
         </div>
@@ -471,17 +501,22 @@ function onForeignInput(code, val) {
   const v = parseFloat(val);
   const ki = document.getElementById('ki_' + code);
   if (!r || !v || v <= 0) { if(ki) ki.value = ''; return; }
-  if (ki) ki.value = Math.round(v / r).toLocaleString('ko-KR').replace(/,/g,'');
+  if (ki) ki.value = Math.round(v / r).toLocaleString('ko-KR');
 }
 
 /* 카드 원화 입력 → 외화 계산 */
 function onKrwCardInput(code, val) {
   clearTopKrw();
   const r = rates[code];
-  const v = parseFloat(val);
+  // 콤마 제거 후 파싱
+  const digits = val.replace(/[^0-9]/g,'');
+  const num = parseFloat(digits) || 0;
+  const el = document.getElementById('ki_' + code);
+  // 콤마 포맷 적용
+  if (el) el.value = num > 0 ? num.toLocaleString('ko-KR') : '';
   const fi = document.getElementById('fi_' + code);
-  if (!r || !v || v <= 0) { if(fi) fi.value = ''; return; }
-  const foreign = v * r;
+  if (!r || !num || num <= 0) { if(fi) fi.value = ''; return; }
+  const foreign = num * r;
   if (fi) fi.value = foreign < 1 ? foreign.toFixed(4) : fmt(foreign).replace(/,/g,'');
 }
 
@@ -497,7 +532,7 @@ function resetCard(code, side) {
 }
 
 function clearTopKrw() {
-  document.getElementById('krwInput').value = '';
+  const inp = document.getElementById('krwInput'); inp.value = '';
   document.getElementById('krwHint').textContent = '금액을 입력하세요';
   document.getElementById('krwOutputRow').classList.remove('show');
   CURRENCIES.forEach(c => {
@@ -535,14 +570,27 @@ function showKrwMiniChips(krwVal) {
   row.classList.add('show');
 }
 
+/* 콤마 포함 문자열에서 숫자 추출 */
+function getRawKrw() {
+  const raw = document.getElementById('krwInput').value.replace(/,/g,'');
+  return parseFloat(raw) || 0;
+}
+
 document.getElementById('krwInput').addEventListener('input', function() {
-  const val = parseFloat(this.value);
-  // 카드 원화 입력 클리어
+  const cursor = this.selectionStart;
+  const prevLen = this.value.length;
+  const digits = this.value.replace(/[^0-9]/g,'');
+  const num = parseFloat(digits) || 0;
+  const formatted = num > 0 ? num.toLocaleString('ko-KR') : '';
+  this.value = formatted;
+  const diff = formatted.length - prevLen;
+  try { this.setSelectionRange(cursor + diff, cursor + diff); } catch(e){}
+
   CURRENCIES.forEach(c => {
     const ki = document.getElementById('ki_' + c.code);
     if (ki) ki.value = '';
   });
-  if (!val || val <= 0) {
+  if (!num || num <= 0) {
     document.getElementById('krwHint').textContent = '금액을 입력하세요';
     document.getElementById('krwOutputRow').classList.remove('show');
     CURRENCIES.forEach(c => {
@@ -551,9 +599,9 @@ document.getElementById('krwInput').addEventListener('input', function() {
     });
     return;
   }
-  document.getElementById('krwHint').textContent = '₩' + Math.round(val).toLocaleString('ko-KR') + ' 환산 결과';
-  showKrwMiniChips(val);
-  propagateKrw(val);
+  document.getElementById('krwHint').textContent = '₩' + num.toLocaleString('ko-KR') + ' 환산 결과';
+  showKrwMiniChips(num);
+  propagateKrw(num);
 });
 
 function filterGroup(el, group) {
@@ -561,7 +609,7 @@ function filterGroup(el, group) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   el.classList.add('active');
   renderCards();
-  const kv = parseFloat(document.getElementById('krwInput').value);
+  const kv = getRawKrw();
   if (kv > 0) propagateKrw(kv);
 }
 
