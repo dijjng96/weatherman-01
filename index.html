@@ -313,11 +313,9 @@ function fmt(n) {
   if (n >= 0.01)  return n.toLocaleString('ko-KR',{minimumFractionDigits:4,maximumFractionDigits:4});
   return n.toFixed(6);
 }
-/* 외화 입력칸 표시 — 항상 소수점 2자리 */
+/* 외화 입력칸 표시 — 항상 소수점 2자리 (콤마 포함) */
 function fmtForeign(n) {
-  if (n >= 1) return n.toLocaleString('ko-KR',{minimumFractionDigits:2,maximumFractionDigits:2});
-  if (n >= 0.01) return n.toFixed(4);
-  return n.toFixed(6);
+  return n.toLocaleString('ko-KR',{minimumFractionDigits:2,maximumFractionDigits:2});
 }
 function fmtKrw(n)  { return '₩ ' + Math.round(n).toLocaleString('ko-KR'); }
 function flagUrl(c) { return `https://flagcdn.com/w80/${c}.png`; }
@@ -463,7 +461,7 @@ function renderCards() {
             <span class="row-code">${c.code}</span>
           </div>
           <input class="calc-input" id="fi_${c.code}"
-            type="number" placeholder="외화 입력" inputmode="decimal" autocomplete="off"
+            type="text" placeholder="외화 입력" inputmode="decimal" autocomplete="off"
             oninput="onForeignInput('${c.code}', this.value)"
             onfocus="resetCard('${c.code}','foreign')">
         </div>
@@ -487,9 +485,36 @@ function renderCards() {
 function onForeignInput(code, val) {
   clearTopKrw();
   const r = rates[code];
-  const v = parseFloat(val);
+  // 콤마 제거 후 파싱 (소수점은 유지)
+  const cleaned = val.replace(/,/g,'');
+  const v = parseFloat(cleaned);
+  const el = document.getElementById('fi_' + code);
   const ki = document.getElementById('ki_' + code);
-  if (!r || !v || v <= 0) { if(ki) ki.value = ''; return; }
+
+  if (!r || !v || v <= 0) {
+    if (ki) ki.value = '';
+    return;
+  }
+
+  // 외화 입력칸에 콤마 포맷 적용 (입력 중 커서 유지)
+  if (el) {
+    const cursor = el.selectionStart;
+    const prevLen = el.value.length;
+    // 소수점 이하가 있으면 보존, 없으면 그대로
+    const dotIdx = cleaned.indexOf('.');
+    let formatted;
+    if (dotIdx >= 0) {
+      const intPart = parseInt(cleaned.substring(0, dotIdx)) || 0;
+      const decPart = cleaned.substring(dotIdx); // '.xx' 포함
+      formatted = intPart.toLocaleString('ko-KR') + decPart;
+    } else {
+      formatted = (parseInt(cleaned) || 0).toLocaleString('ko-KR');
+    }
+    el.value = formatted;
+    const diff = formatted.length - prevLen;
+    try { el.setSelectionRange(cursor + diff, cursor + diff); } catch(e){}
+  }
+
   if (ki) ki.value = Math.round(v / r).toLocaleString('ko-KR');
 }
 
@@ -499,10 +524,16 @@ function onKrwCardInput(code, val) {
   const r = rates[code];
   // 콤마 제거 후 파싱
   const digits = val.replace(/[^0-9]/g,'');
-  const num = parseFloat(digits) || 0;
+  const num = parseInt(digits) || 0;
   const el = document.getElementById('ki_' + code);
-  // 콤마 포맷 적용
-  if (el) el.value = num > 0 ? num.toLocaleString('ko-KR') : '';
+  // 콤마 포맷 적용 + 커서 유지
+  if (el) {
+    const cursor = el.selectionStart;
+    const prevLen = el.value.length;
+    el.value = num > 0 ? num.toLocaleString('ko-KR') : '';
+    const diff = el.value.length - prevLen;
+    try { el.setSelectionRange(cursor + diff, cursor + diff); } catch(e){}
+  }
   const fi = document.getElementById('fi_' + code);
   if (!r || !num || num <= 0) { if(fi) fi.value = ''; return; }
   const foreign = num * r;
@@ -553,7 +584,7 @@ function showKrwMiniChips(krwVal) {
     const amt = krwVal * r;
     return `<div class="krw-mini-chip">
       <img class="mini-flag" src="${flagUrl(c.flag)}" alt="${code}" onerror="this.style.display='none'">
-      ${c.sym} ${fmt(amt)}
+      ${c.sym} ${fmtForeign(amt)}
     </div>`;
   }).join('');
   row.classList.add('show');
@@ -603,6 +634,9 @@ function filterGroup(el, group) {
 }
 
 fetchRates();
+
+/* ── 실시간 자동 갱신: 10분마다 환율 데이터 다시 불러오기 ── */
+setInterval(fetchRates, 10 * 60 * 1000);
 </script>
 </body>
 </html>
